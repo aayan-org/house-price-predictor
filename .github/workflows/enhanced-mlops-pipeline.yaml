@@ -1,0 +1,283 @@
+name: MLOps Pipeline
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
+
+  pull_request:
+    branches:
+      - main
+
+# Prevent multiple runs for the same branch/PR from consuming
+# the self-hosted runner unnecessarily.
+concurrency:
+  group: mlops-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  MLFLOW_VERSION: "3.7.0"
+  IMAGE_NAME: house-price-model
+
+jobs:
+
+  # ============================================================
+  # 1. DATA PREPROCESSING
+  # ============================================================
+  data-preprocessing:
+    name: Data preprocessing
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Upgrade pip
+        run: |
+          python -m pip install --upgrade pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Validate input data
+        run: |
+          test -f data/raw/house_data.csv
+
+      - name: Run data preprocessing
+        run: |
+          python src/data/run_processing.py \
+            -input data/raw/house_data.csv \
+            -output data/processed/cleaned_house_data.csv
+
+      - name: Validate preprocessor
+        run: |
+          test -f models/trained/preprocessor.pkl
+
+      - name: Feature engineering
+        run: |
+          python src/features/engineer.py \
+            --input data/processed/cleaned_house_data.csv \
+            --output data/processed/featured_house_data.csv \
+            --preprocessor models/trained/preprocessor.pkl
+
+      - name: Validate processed dataset
+        run: |
+          test -s data/processed/featured_house_data.csv
+
+      - name: Upload processed data
+        uses: actions/upload-artifact@v4
+        with:
+          name: processed-data-${{ github.sha }}
+          path: data/processed/featured_house_data.csv
+          retention-days: 7
+
+      - name: Upload preprocessor
+        uses: actions/upload-artifact@v4
+        with:
+          name: preprocessor-${{ github.sha }}
+          path: models/trained/preprocessor.pkl
+          retention-days: 7
+
+
+  # ============================================================
+  # 2. MODEL TRAINING
+  # ============================================================
+  model-training:
+    name: Model training
+    runs-on: self-hosted
+    needs: data-preprocessing
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download processed data
+        uses: actions/download-artifact@v4
+        with:
+          name: processed-data-${{ github.sha }}
+          path: data/processed
+
+      - name: Download preprocessor
+        uses: actions/download-artifact@v4
+        with:
+          name: preprocessor-${{ github.sha }}
+          path: models/trained
+
+      - name: Create unique MLflow directory
+        run: |
+          mkdir -p "${RUNNER_TEMP}/mlflow-${GITHUB_RUN_ID}"
+
+      - name: Start MLflow server
+        run: |
+          docker pull ghcr.io/mlflow/mlflow:v${{ env.MLFLOW_VERSION }}
+
+          docker run -d \
+            --name mlflow-${GITHUB_RUN_ID} \
+            -p 5000:5000 \
+            -v "${RUNNER_TEMP}/mlflow-${GITHUB_RUN_ID}:/mlflow" \
+            ghcr.io/mlflow/mlflow:v${{ env.MLFLOW_VERSION }} \
+            mlflow server \
+              --host 0.0.0.0 \
+              --port 5000 \
+              --backend-store-uri sqlite:////mlflow/mlflow.db
+
+      - name: Wait for MLflow
+        shell: bash
+        run: |
+          echo "Waiting for MLflow..."
+
+          for i in {1..30}; do
+            if curl -fsS http://localhost:5000/health > /dev/null; then
+              echo "MLflow is ready."
+              exit 0
+            fi
+
+            echo "MLflow not ready yet... attempt $i/30"
+            sleep 2
+          done
+
+          echo "MLflow failed to start."
+          docker logs mlflow-${GITHUB_RUN_ID}
+          exit 1
+
+      - name: Train model
+        env:
+          MLFLOW_TRACKING_URI: http://localhost:5000
+        run: |
+          mkdir -p models/trained
+
+          python src/models/train_model.py \
+            --config configs/model_config.yaml \
+            --data data/processed/featured_house_data.csv \
+            --models-dir models \
+            --mlflow-tracking-uri "$MLFLOW_TRACKING_URI"
+
+      - name: Validate trained model
+        run: |
+          test -d models/trained
+          find models/trained -type f -print
+
+      - name: Upload trained model
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-model-${{ github.sha }}
+          path: models/trained/
+          retention-days: 14
+
+      - name: Upload MLflow database
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-run-${{ github.sha }}
+          path: ${{ runner.temp }}/mlflow-${{ github.run_id }}/mlflow.db
+          retention-days: 14
+
+      - name: Cleanup MLflow
+        if: always()
+        run: |
+          docker logs mlflow-${GITHUB_RUN_ID} || true
+          docker stop mlflow-${GITHUB_RUN_ID} || true
+          docker rm mlflow-${GITHUB_RUN_ID} || true
+          rm -rf "${RUNNER_TEMP}/mlflow-${GITHUB_RUN_ID}"
+
+
+  # ============================================================
+  # 3. BUILD / PUBLISH DOCKER IMAGE
+  # ============================================================
+  build-and-push-docker-image:
+    name: Build and publish Docker image
+    runs-on: self-hosted
+    needs: model-training
+
+    # Run for PRs, but only push to Docker Hub for main/tags/manual runs.
+    if: >
+      github.event_name == 'pull_request' ||
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Download trained model
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-model-${{ github.sha }}
+          path: models/trained
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Determine image tags
+        id: tags
+        shell: bash
+        run: |
+          IMAGE="docker.io/${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
+
+          echo "sha_tag=${IMAGE}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+            echo "version_tag=${IMAGE}:${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest_tag=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            echo "latest_tag=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+
+          # Push only on main/version tags, never on PRs.
+          push: ${{ github.event_name != 'pull_request' }}
+
+          tags: |
+            ${{ steps.tags.outputs.sha_tag }}
+            ${{ steps.tags.outputs.latest_tag }}
+            ${{ steps.tags.outputs.version_tag }}
+
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+          provenance: true
+          sbom: true
