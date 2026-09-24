@@ -1,0 +1,134 @@
+name: MLOps Pipeline
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches:
+      - main
+jobs:
+  data-preprocessing:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      - name: Run data preprocessing script
+        run: |
+           python src/data/run_processing.py \
+           -input data/raw/house_data.csv \
+           -output data/processed/cleaned_house_data.csv
+      - name: Feature Engineering
+        run: |
+            python src/features/engineer.py \
+            -input data/processed/cleaned_house_data.csv \
+            --output data/processed/featured_house_data.csv \
+            --preprocessor models/trained/preprocessor.pkl
+      - name: upload processed data to artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: processed-data
+          path: data/processed/featured_house_data.csv 
+
+      - name: upload preprocessor to artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: preprocessor
+          path: models/trained/preprocessor.pkl
+
+  model-training:
+    runs-on: self-hosted
+    needs: data-preprocessing
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+      - name: Download processed data artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: processed-data
+          path: data/processed/
+      - name: Set up MLflow
+        run: |
+          docker pull ghcr.io/mlflow/mlflow:latest
+          docker run -d -p 5000:5000 --name mlflow-server ghcr.io/mlflow/mlflow:latest \
+          mlflow server --host 0.0.0.0 --backend-store-uri sqlite:///mlflow.db
+
+        
+      - name: Wait for MLflow server to start
+        run: |
+          echo "Waiting for MLflow server to start..."
+          for i in {1..10}; do
+            if curl -s http://localhost:5000/health > /dev/null; then
+              echo "MLflow server is up!"
+              break
+            fi
+            echo "Waiting for MLflow server to start... ($i/10)"
+            sleep 5
+          done
+
+      - name: Train model and log to MLflow
+        run: |
+            mkdir -p models
+            python src/models/train_model.py \
+            --config configs/model_config.yaml \
+            --data data/processed/featured_house_data.csv \
+            --model-dir models \
+            --mlflow-tracking-uri http://localhost:5000
+
+      - name: Upload trained model to artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: trained-model
+          path: models/
+
+      - name: Cleanup MLflow server
+        run: |
+          docker stop mlflow-server || true
+          docker rm mlflow-server || true
+
+  build-and-push-docker-image:
+    runs-on: self-hosted
+    needs: model-training
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Download trained model artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: trained-model
+          path: models/
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        with:
+          driver: docker
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
+        with:
+          registry: docker.io
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: docker.io/${{ vars.DOCKERHUB_USERNAME }}/house-price-model:latest
+          
