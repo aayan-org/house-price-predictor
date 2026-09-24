@@ -1,3 +1,6 @@
+
+<img width="1055" height="1491" alt="mlops-workflows" src="https://github.com/user-attachments/assets/6cf276f3-8256-4a63-bf76-d9777de806ae" />
+
 Sure. The diagram represents a complete **end-to-end MLOps lifecycle** for the House Price Prediction project. The key idea is to separate **CI (validation/training)** from **CD (release/deployment)**, with MLflow providing experiment/model tracking and monitoring creating the feedback loop.
 
 * **1. Developer triggers the pipeline**
