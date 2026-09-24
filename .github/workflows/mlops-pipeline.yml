@@ -89,18 +89,18 @@ jobs:
 
       - name: Train model and log to MLflow
         run: |
-            mkdir -p models
+            mkdir -p models/trained
             python src/models/train_model.py \
             --config configs/model_config.yaml \
             --data data/processed/featured_house_data.csv \
-            --model-dir models \
+            --model-dir models/trained \
             --mlflow-tracking-uri http://localhost:5000
 
       - name: Upload trained model to artifacts
         uses: actions/upload-artifact@v4
         with:
           name: trained-model
-          path: models/
+          path: models/trained/
 
       - name: Cleanup MLflow server
         run: |
@@ -118,7 +118,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: trained-model
-          path: models/
+          path: models/trained/
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
