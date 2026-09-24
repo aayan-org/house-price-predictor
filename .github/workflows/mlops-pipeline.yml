@@ -15,32 +15,37 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: 3.11
+
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
+
       - name: Run data preprocessing script
         run: |
            python src/data/run_processing.py \
            -input data/raw/house_data.csv \
            -output data/processed/cleaned_house_data.csv
+
       - name: Feature Engineering
         run: |
             python src/features/engineer.py \
             -input data/processed/cleaned_house_data.csv \
             --output data/processed/featured_house_data.csv \
             --preprocessor models/trained/preprocessor.pkl
+
       - name: upload processed data to artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: processed-data
           path: data/processed/featured_house_data.csv 
 
       - name: upload preprocessor to artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: preprocessor
           path: models/trained/preprocessor.pkl
@@ -51,15 +56,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: 3.11
+          
       - name: Download processed data artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: processed-data
           path: data/processed/
+
       - name: Set up MLflow
         run: |
           docker pull ghcr.io/mlflow/mlflow:latest
@@ -89,7 +97,7 @@ jobs:
             --mlflow-tracking-uri http://localhost:5000
 
       - name: Upload trained model to artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: trained-model
           path: models/
@@ -107,18 +115,18 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Download trained model artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: trained-model
           path: models/
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
         with:
           driver: docker
 
       - name: Login to DockerHub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           registry: docker.io
           username: ${{ vars.DOCKERHUB_USERNAME }}
@@ -131,4 +139,3 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: docker.io/${{ vars.DOCKERHUB_USERNAME }}/house-price-model:latest
-          
