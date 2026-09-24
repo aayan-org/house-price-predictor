@@ -1,0 +1,35 @@
+name: Test Runner
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+jobs:
+  test:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.8
+      - name: System Information
+        run: |
+          echo "Operating System: $(uname -s)"
+          echo "Architecture: $(uname -m)"
+          echo "Python Version: $(python --version)"
+          echo "Pip Version: $(pip --version)"
+          echo "user: $(whoami)"
+          echo "Current Directory: $(pwd)"
+      - name: Git version
+        run: git --version
+      - name: github variables
+        run: |
+          echo "GITHUB_REPOSITORY: ${{ github.repository }}"
+          echo "GITHUB_REF: ${{ github.ref }}"
+          echo "GITHUB_SHA: ${{ github.sha }}"
+          echo "GITHUB_ACTOR: ${{ github.actor }}"
