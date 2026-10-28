@@ -10,7 +10,7 @@ Following is all the information you would need to start building the container 
   * Port: `8000`
   * Launch Command : `uvicorn main:app --host 0.0.0.0 --port 8000`
 
-Directory structure inside the container should look like this 
+Directory structure inside the container should look like this ....
 
 ```
 /app
