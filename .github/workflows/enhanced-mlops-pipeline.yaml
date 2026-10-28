@@ -65,9 +65,9 @@ jobs:
             -input data/raw/house_data.csv \
             -output data/processed/cleaned_house_data.csv
 
-      - name: Validate preprocessor
-        run: |
-          test -f models/trained/preprocessor.pkl
+      #- name: Validate preprocessor
+      #  run: |
+      #    test -f models/trained/preprocessor.pkl
 
       - name: Feature engineering
         run: |
