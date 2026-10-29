@@ -30,7 +30,7 @@ env:
 jobs:
 
   # ============================================================
-  # 1. DATA PREPROCESSING.......
+  # 1. DATA PREPROCESSING
   # ============================================================
   data-preprocessing:
     name: Data preprocessing
